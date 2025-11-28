@@ -45,3 +45,4 @@ C:\Users\SUHAS S\new_Local_agent\PrintAgent\obj\Debug\net8.0-windows\refint\Prin
 C:\Users\SUHAS S\new_Local_agent\PrintAgent\obj\Debug\net8.0-windows\PrintAgent.pdb
 C:\Users\SUHAS S\new_Local_agent\PrintAgent\obj\Debug\net8.0-windows\PrintAgent.genruntimeconfig.cache
 C:\Users\SUHAS S\new_Local_agent\PrintAgent\obj\Debug\net8.0-windows\ref\PrintAgent.dll
+C:\Users\SUHAS S\new_Local_agent\PrintAgent\obj\Debug\net8.0-windows\PrintAgent.sourcelink.json

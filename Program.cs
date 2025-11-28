@@ -64,12 +64,32 @@ public class RedisService
             var jobJson = await _db.ListLeftPopAsync(_queueName);
             if (jobJson.IsNullOrEmpty) return null;
 
-            var job = JsonSerializer.Deserialize<PrintJob>(jobJson!);
+            Console.WriteLine($"📨 Raw job data: {jobJson}");
+
+            var options = new JsonSerializerOptions 
+            { 
+                PropertyNameCaseInsensitive = true,
+                PropertyNamingPolicy = JsonNamingPolicy.CamelCase
+            };
+
+            var job = JsonSerializer.Deserialize<PrintJob>(jobJson!, options);
+            
+            if (job != null)
+            {
+                // Generate JobId if not provided
+                if (string.IsNullOrEmpty(job.JobId))
+                {
+                    job.JobId = Guid.NewGuid().ToString();
+                }
+                
+                Console.WriteLine($"✅ Parsed - JobId: {job.JobId}, FileUrl: {job.FileUrl}, FileName: {job.FileName}");
+            }
+            
             return job;
         }
         catch (Exception ex)
         {
-            Console.WriteLine($"❌ Redis error: {ex.Message}");
+            Console.WriteLine($"❌ Redis deserialization error: {ex.Message}");
             return null;
         }
     }
@@ -133,11 +153,31 @@ public class PrintWorkerService : BackgroundService
         var maxRetries = _config.GetValue<int>("PrintAgent:MaxRetries");
         var retryDelay = _config.GetValue<int>("PrintAgent:RetryDelayMs");
 
+        Console.WriteLine($"📋 Job Details:");
+        Console.WriteLine($"   JobId: {job.JobId}");
+        Console.WriteLine($"   FileUrl: '{job.FileUrl}'");
+        Console.WriteLine($"   URL Length: {job.FileUrl?.Length ?? 0}");
+
         for (int attempt = 1; attempt <= maxRetries; attempt++)
         {
             try
             {
                 Console.WriteLine($"🔄 Attempt {attempt}/{maxRetries}");
+
+                // Validate URL
+                if (string.IsNullOrWhiteSpace(job.FileUrl))
+                {
+                    throw new Exception("FileUrl is empty or null");
+                }
+
+                // Handle localhost URLs
+                var fileUrl = job.FileUrl.Trim();
+                if (!Uri.TryCreate(fileUrl, UriKind.Absolute, out var uri))
+                {
+                    throw new Exception($"Invalid URL format: {fileUrl}");
+                }
+
+                Console.WriteLine($"✓ Valid URL: {uri.AbsoluteUri}");
 
                 // Download file
                 var filePath = await DownloadFile(job.FileUrl);
@@ -163,7 +203,6 @@ public class PrintWorkerService : BackgroundService
                 else
                 {
                     Console.WriteLine($"💀 Job {job.JobId} failed after {maxRetries} attempts\n");
-                    // Optionally requeue or log to dead letter queue
                 }
             }
         }
@@ -251,7 +290,11 @@ public class PrintService
 
     private string GetPrinterName(PrintOptions options)
     {
-        return options.ColorMode?.ToLower() == "color" ? _colorPrinter : _bwPrinter;
+        // Handle both 'color' and 'blackAndWhite' formats
+        var colorMode = options.ColorMode?.ToLower() ?? "blackandwhite";
+        return colorMode.Contains("color") && !colorMode.Contains("black") 
+            ? _colorPrinter 
+            : _bwPrinter;
     }
 
     private void PrintPdf(string pdfPath, PrintOptions options)
@@ -410,13 +453,16 @@ public class PrintService
 
                 devMode.dmDuplex = options.Duplex?.ToLower() switch
                 {
-                    "vertical" or "double" => Win32.DMDUP_VERTICAL,
+                    "vertical" or "double" or "duplex" => Win32.DMDUP_VERTICAL,
                     "horizontal" => Win32.DMDUP_HORIZONTAL,
-                    _ => Win32.DMDUP_SIMPLEX
+                    _ => Win32.DMDUP_SIMPLEX  // "single" or "simplex"
                 };
                 devMode.dmFields |= Win32.DM_DUPLEX;
 
-                devMode.dmColor = options.ColorMode?.ToLower() == "color" ? Win32.DMCOLOR_COLOR : Win32.DMCOLOR_MONOCHROME;
+                devMode.dmColor = (options.ColorMode?.ToLower().Contains("color") == true && 
+                                  !options.ColorMode.ToLower().Contains("black"))
+                    ? Win32.DMCOLOR_COLOR 
+                    : Win32.DMCOLOR_MONOCHROME;
                 devMode.dmFields |= Win32.DM_COLOR;
 
                 devMode.dmOrientation = options.Orientation?.ToLower() == "landscape" ? Win32.DMORIENT_LANDSCAPE : Win32.DMORIENT_PORTRAIT;
@@ -444,13 +490,15 @@ public class PrintService
     private void ApplyBasicSettings(PrintDocument printDoc, PrintOptions options)
     {
         printDoc.PrinterSettings.Copies = (short)options.Copies;
-        printDoc.DefaultPageSettings.Color = options.ColorMode?.ToLower() == "color";
+        
+        var colorMode = options.ColorMode?.ToLower() ?? "blackandwhite";
+        printDoc.DefaultPageSettings.Color = colorMode.Contains("color") && !colorMode.Contains("black");
 
         printDoc.PrinterSettings.Duplex = options.Duplex?.ToLower() switch
         {
-            "vertical" or "double" => Duplex.Vertical,
+            "vertical" or "double" or "duplex" => Duplex.Vertical,
             "horizontal" => Duplex.Horizontal,
-            _ => Duplex.Simplex
+            _ => Duplex.Simplex  // "single" or "simplex"
         };
 
         printDoc.DefaultPageSettings.Landscape = options.Orientation?.ToLower() == "landscape";
@@ -499,19 +547,23 @@ public class PrintService
 // ============== MODELS ==============
 public class PrintJob
 {
-    public string JobId { get; set; } = Guid.NewGuid().ToString();
+    public string? JobId { get; set; }
     public string FileUrl { get; set; } = string.Empty;
+    public string? FileName { get; set; }
+    public string? UserId { get; set; }
+    public string? UserEmail { get; set; }
+    public string? Token { get; set; }
     public PrintOptions Options { get; set; } = new();
 }
 
 public class PrintOptions
 {
     public int Copies { get; set; } = 1;
-    public string? ColorMode { get; set; } = "bw";
-    public string? Duplex { get; set; } = "simplex";
-    public string? PaperSize { get; set; } = "A4";
-    public string? PageRange { get; set; } = "all";
-    public string? Orientation { get; set; } = "portrait";
+    public string ColorMode { get; set; } = "blackAndWhite";
+    public string Duplex { get; set; } = "single";
+    public string PaperSize { get; set; } = "1";
+    public string PageRange { get; set; } = "1";
+    public string Orientation { get; set; } = "portrait";
 }
 
 // ============== WIN32 API ==============
